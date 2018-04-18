@@ -19,3 +19,4 @@ peaks = cf.count_peaks("/mnt/d/work/sc/workflows/runs/clipdb_fus/temp/compiled/s
 cf.export(peaks, "temp/exported_peaks.tsv")
 
 cf.process("/mnt/d/work/sc/workflows/runs/clipdb_fus/temp/compiled/specialized/FUS_SRX029328.bed", "temp/processed_test.tsv", "mouse")
+cf.process("/mnt/d/work/sc/workflows/runs/clipdb_fus/temp/compiled/specialized/FUS_SRX029328.bed", "temp/processed_test_unprojected.tsv")

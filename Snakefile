@@ -1,14 +1,14 @@
 """
 Assumes that data is a clipDB bulk download in an input dir
-CLIPDB dir must be in folder input/clipdb and must contain: 
+CLIPDB dir must be in folder input/clipdb and must contain:
     (GENE_CIMS, GENE_CITS, GENE_PARalyzer, GENE_Piranha) directories
     and an annotation db containing filename-> sample_name mappings
 
 TODO: Automate annotation collection?
-
-
-setup directory 
+setup directory
 """
+import matplotlib
+matplotlib.use("Agg")
 import os
 import shutil
 import logging
@@ -16,6 +16,7 @@ import pandas as pd
 import seaborn as sb
 from clip_analyze import ClipFinder, ClipAnalyzer
 from clip_compile import compile_clip_degs
+from collections import Counter
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -45,14 +46,15 @@ elif config["runtype"] == "default":
     expected_bedfiles = df["file_name"].tolist()
     expected_files = [os.path.splitext(i)[0] for i in expected_bedfiles]
     # Check that all files are present
-    assert(sorted(expected_bedfiles) == sorted(bedfile_list))
+    # Annotations are currently used to control what will be processed. Maybe change this
+    assert(all(i in bedfile_list for i in expected_bedfiles))
 
     # Check that all specialized files are present
     expected_specialized = []
     for i in specialized:
         expected_specialized.extend(os.listdir(os.path.join("input", i)))
 
-    assert(sorted(expected_specialized) == sorted(bedfile_list))
+    assert(all(i in bedfile_list for i in expected_specialized))
 
     # output = [expand("/".join(["temp", "compiled", "specialized", "{bedfile}"]), bedfile=expected_bedfiles),
     #           expand("/".join(["temp", "compiled", "piranha", "{bedfile}"]), bedfile=expected_bedfiles)]
@@ -92,6 +94,7 @@ rule compile_data:
 
 input_data = ["input/{}_Piranha"]
 input_data = [i.format(gene_sym) for i in input_data]
+
 rule compile_piranha_data:
     input: input_data
     output: expand("/".join(["temp", "compiled", "piranha", "{bedfile}"]), bedfile=expected_bedfiles)
@@ -122,7 +125,7 @@ rule summarize_peaks:
                          "human": "/mnt/d/work/sc/data/ensembl_hsapiens_2018_01_03_ucsc-chroms.bed"},
                         {"mouse": "/mnt/d/work/sc/data/ensembl_mmus_exon_2018_01_03_ucsc-chroms.bed",
                          "human": "/mnt/d/work/sc/data/ensembl_hsapiens_exon_2018_01_03_ucsc-chroms.bed"},
-                        annotations="/mnt/d/work/sc/workflows/runs/clipdb_fus/input/annotations.tsv",
+                        annotations="input/annotations.tsv",
                         crossmap="/mnt/d/work/sc/data/ensembl_human_mappings_2018_01_05.tsv")
         cf.load_mappings({"mouse": "/mnt/d/work/sc/data/ensembl_mmusculus_mappings_2017_11_16.tsv",
                           "human": "/mnt/d/work/sc/data/ensembl_human_2018_01_05.tsv"})
@@ -153,7 +156,7 @@ rule summarize_peaks:
 rule integrate_expression_data:
     input:
         peak_summary = "output/peak_summaries/{dataset}/summary.tsv",
-        de_data = "input/fus_exp_data",
+        de_data = "input/exp_data",
         other_peak_data = "input/supplementary_peaks",
         mapping_path = "/mnt/d/work/sc/data/ensembl_mmusculus_mappings_2017_11_16.tsv"
     output:
@@ -162,9 +165,22 @@ rule integrate_expression_data:
     params:
         outdir = "output/{dataset}/clip_summary"
     run:
-        compile_clip_degs(input.de_data, input.other_peak_data,
-                          input.peak_summary, input.mapping_path,
-                          params.outdir)
+        compiled, view = compile_clip_degs(input.de_data, input.other_peak_data,
+                                           input.peak_summary, input.mapping_path,
+                                           params.outdir)
+        # Agreement distribution plots
+        agreement = [int(i) for i in compiled["agreement"]]
+        plt = sb.distplot(agreement)
+        plt.figure.savefig("output/{}/clip_summary/agreement-plot.png".format(wildcards.dataset), kde=False)
+        matplotlib.pyplot.clf()
+
+        # Remove the zeros
+        agreement = [int(i) for i in compiled["agreement"] if i != 0]
+        plt = sb.distplot(agreement)
+        plt.figure.savefig("output/{}/clip_summary/agreement-plot_nozeros.png".format(wildcards.dataset), kde=False)
+
+
+
 
 """
 Analysis of clip-peak data and the creation of the following plots
@@ -176,19 +192,19 @@ rule analyze_data:
     input: expand("output/peak_summaries/{{dataset}}/individual/{expected_files}.tsv", expected_files=expected_files)
     output:
         "output/{dataset}/plots/pca",
-        "output/{dataset}/plots/cluster"
+        # "output/{dataset}/plots/cluster"
     params:
         indir = "output/peak_summaries/{dataset}/individual",
         outdir = "output/{dataset}/plots"
     run:
-        ca = ClipAnalyzer("/mnt/d/work/sc/workflows/runs/clipdb_fus/input/annotations.tsv")
+        ca = ClipAnalyzer("input/annotations.tsv")
         ca.load_data(params.indir)
         ca.generate_all_plots(params.outdir)
 
 rule compile_report:
     input:
         "output/{dataset}/plots/pca",
-        "output/{dataset}/plots/cluster",
+        # "output/{dataset}/plots/cluster",
         "output/peak_summaries/{dataset}/summary.tsv",
         "output/{dataset}/clip_summary/compiled_clip.tsv",
         "output/{dataset}/clip_summary/compiled_clip.xlsx"

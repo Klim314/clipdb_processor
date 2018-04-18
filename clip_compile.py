@@ -1,3 +1,4 @@
+import logging
 import pandas as pd
 import seaborn as sb
 import os
@@ -33,6 +34,7 @@ def compile_clip_degs(de_data, other_peak_data, input_data, mapping_path, outdir
     base_table = pd.read_csv(input_data, sep="\t")
     # Add the supplementary data to the front first
     for path in (os.path.join(other_peak_data, i) for i in os.listdir(other_peak_data)):
+        logging.debug("Now processing: " + path)
         peak_table = pd.read_csv(path, sep="\t")
         # Use the filename to distinguish between each
         dataset_name = os.path.splitext(os.path.basename(path))[0]
@@ -84,4 +86,4 @@ def compile_clip_degs(de_data, other_peak_data, input_data, mapping_path, outdir
     writer.save()
     # write... html?
     # view.to_html("compiled_clip.html")
-    return view
+    return (base_table, view)

@@ -3,9 +3,9 @@
 TODO: Handle issues with multi-species mapping Currently maps human directly to mouse. THATS BAD
 """
 import matplotlib
-
 matplotlib.use("Agg")
 
+import logging
 import os
 import pandas as pd
 import numpy as np
@@ -16,6 +16,7 @@ from collections import defaultdict
 from pybedtools import BedTool
 from pprint import pprint
 from matplotlib import pyplot as plt
+
 
 
 class ClipFinder:
@@ -39,6 +40,7 @@ class ClipFinder:
 
     def _get_species(self, string):
         # Gets the species from a bedfile/tsv/samplename string
+        logging.debug(string)
         sample_name = os.path.basename(string)
         sample_name = os.path.splitext(sample_name)[0]
         print("sample_name: ", sample_name)
@@ -46,8 +48,8 @@ class ClipFinder:
         try:
             species = species.tolist()[0]
         except:
-            print(sample_name)
-            print(self.annotations["sample_name"])
+            logging.debug(sample_name)
+            logging.debug(self.annotations["sample_name"])
             raise
         return species
 
@@ -159,14 +161,16 @@ class ClipFinder:
                            "peak_counts": peak_counts,
                            "exon_counts": exon_counts})
 
-        # if projection is desired
+        # if projection is desired, convert to the projected gene
         if project and project != species:
             print("projecting from {} to {}".format(species, project))
             cross = self.crossmap[[species, project]].rename(columns={species: "ens_gene",
                                                                       project: "ens_gene_projected"})
             df = df.merge(cross, how="left", on="ens_gene")
             df = df.rename(columns={"ens_gene": "junk", "ens_gene_projected": "ens_gene"})
-        df = df[["ens_gene", "peak_counts", "exon_counts"]]
+            # The projection can result in multiple redundant entries, so we merge them here
+            df = df[["ens_gene", "peak_counts", "exon_counts"]]
+            df = df.groupby("ens_gene", as_index=False).sum()
         total = len(df)
         # print(df["ens_gene"].head())
         # print(df["ens_gene"].head() != "")
@@ -204,22 +208,28 @@ class Sample:
             self.exon_peak_arr[index_map[ens_gene]] = exon_peaks
 
 
-
 class ClipAnalyzer:
     """Performs the quick analysis of the peak data
     """
     def __init__(self, annotations):
+        logging.debug("READING ANNOTATIONS FROM {}".format(annotations))
         self.annotations = pd.read_csv(annotations, sep="\t")
 
     def load_data(self, dataset_dir):
         # check that the annotations and targeted dataset are identical
         # All targets correct
         annotation_tsvs = [os.path.splitext(os.path.basename(file_name))[0] + ".tsv" for file_name in self.annotations["file_name"]]
+        dataset_tsvs = [i for i in os.listdir(dataset_dir) if i.endswith(".tsv")]
         try:
-            assert(sorted(annotation_tsvs) == sorted((i for i in os.listdir(dataset_dir) if i.endswith(".tsv"))))
+            logging.debug("CLIPANALYZER LOADING DATA")
+            logging.debug("Loading data from {}".format(dataset_dir))
+            logging.debug(annotation_tsvs)
+            logging.debug(dataset_tsvs)
+
+            assert(all(tsv in [i for i in os.listdir(dataset_dir) if i.endswith(".tsv")] for tsv in annotation_tsvs))
         except:
-            pprint(sorted(annotation_tsvs))
-            pprint(sorted(os.listdir(dataset_dir)))
+            print("Missing data found when loading from {}".format(dataset_dir))
+            pprint([i for i in annotation_tsvs if i not in dataset_tsvs])
             raise
         self.sample_data = dict()
         for index, row in self.annotations.iterrows():
@@ -239,12 +249,20 @@ class ClipAnalyzer:
             sample.generate_arrays(index_map)
 
     def PCA_data(self, data_type="gene_peaks"):
+        """ Generates PCA data
+        @args
+        @returns
+            tuple containing Unnormalized and normalized PCA data
+            (pca, norm_pca)
+        """
+        # Prepare base data
         sample_names = sorted([i for i in self.sample_data])
         samples = [self.sample_data[name] for name in sample_names]
         if data_type == "gene_peaks":
             data = np.array([sample.gene_peak_arr for sample in samples])
         elif data_type == "exon_peaks" or data_type == "exon":
             data = np.array([sample.exon_peak_arr for sample in samples])
+
         pca = PCA(n_components=2)
         pcs = pca.fit(data).transform(data)
         pc1 = [i[0] for i in pcs]
@@ -254,15 +272,34 @@ class ClipAnalyzer:
                                  "pc2": pc2})
         print(pca_data)
         pca_data = pca_data.merge(self.annotations, how="left")
-        return pca_data
 
-    def PCA_plot(self, pca_data, outdir):
+        # Generate sum-normalized PCA plots
+        # generate a normalized dataset using total peakcounts
+        norm_data = [i / sum(i) for i in data]
+        print(norm_data)
+        norm_pcs = PCA(n_components=2).fit(norm_data).transform(norm_data)
+        norm_pc1 = [i[0] for i in norm_pcs]
+        norm_pc2 = [i[1] for i in norm_pcs]
+        norm_pca_data = pd.DataFrame({"sample_name": [sample.name for sample in samples],
+                                      "pc1": norm_pc1,
+                                      "pc2": norm_pc2})
+        norm_pca_data = norm_pca_data.merge(self.annotations, how="left")
+        return (pca_data, norm_pca_data)
+
+    def PCA_plot(self, pca, outdir):
+        pca_data, norm_pca_data = pca
         if not os.path.exists(outdir):
             print("creating directory {} for pca".format(outdir))
             os.makedirs(outdir)
-        for hue in ["batch", "species", "tissue"]:
+        for hue in ["batch", "species", "tissue", "sample_name"]:
+            # Raw data
             plt = sns.lmplot("pc1", "pc2", pca_data, hue=hue, fit_reg=False)
             plt.savefig(os.path.join(outdir, "{}.png".format(hue)))
+
+            # Normalized_peaks
+            plt = sns.lmplot("pc1", "pc2", norm_pca_data, hue=hue, fit_reg=False)
+            plt.savefig(os.path.join(outdir, "{}-norm.png".format(hue)))
+
         return 0
 
     def generate_PCA_plots(self, outdir):
@@ -290,7 +327,8 @@ class ClipAnalyzer:
     def generate_all_plots(self, plot_outdir):
         print("GENERATING PLOTS IN: {}".format(plot_outdir))
         self.generate_PCA_plots(os.path.join(plot_outdir, "pca"))
-        self.generate_cluster_plots(os.path.join(plot_outdir, "cluster"))
+        # Buggy, fix this
+        # self.generate_cluster_plots(os.path.join(plot_outdir, "cluster"))
 
 
 if __name__ == "__main__":
